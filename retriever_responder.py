@@ -116,7 +116,7 @@ def parse_query_with_llm(query: str) -> Dict[str, Any]:
 # File paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 EMBEDDINGS_DIR = os.path.join(CURRENT_DIR, "embeddings")
-FAISS_INDEX_PATH = os.path.join(EMBEDDINGS_DIR, "reviews_faiss_index.pkl")
+FAISS_INDEX_PATH = os.path.join(EMBEDDINGS_DIR, "reviews_faiss_index.index")
 METADATA_PATH = os.path.join(EMBEDDINGS_DIR, "reviews_metadata.pkl")
 
 # Models
@@ -126,14 +126,17 @@ LLM_MODEL = "gpt-4o-mini"  # Can be changed to gpt-4o or other preferred model
 def load_index_and_metadata():
     """Load FAISS index and metadata from disk."""
     try:
-        with open(FAISS_INDEX_PATH, "rb") as f:
-            index = pickle.load(f)
+        # Use FAISS's native binary I/O method for cross-version compatibility
+        index = faiss.read_index(FAISS_INDEX_PATH)
         with open(METADATA_PATH, "rb") as f:
             metadata = pickle.load(f)
         print(f"Loaded FAISS index with {index.ntotal} vectors.")
         return index, metadata
     except FileNotFoundError:
         print(f"Error: Index files not found. Please run embedding_generator.py first.")
+        exit(1)
+    except Exception as e:
+        print(f"Error loading index: {e}")
         exit(1)
 
 def embed_text(text: str) -> Optional[np.ndarray]:

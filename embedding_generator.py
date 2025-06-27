@@ -23,7 +23,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_CSV = os.path.join(CURRENT_DIR, "/Users/jawadali/Desktop/rndsProjects/GoogleCloud/ReviewAnalyzerRagAda/RagAda/FinalReviews.csv")
 OUTPUT_DIR = os.path.join(CURRENT_DIR, "embeddings")
-FAISS_INDEX_PATH = os.path.join(OUTPUT_DIR, "reviews_faiss_index.pkl")
+FAISS_INDEX_PATH = os.path.join(OUTPUT_DIR, "reviews_faiss_index.index")
 METADATA_PATH = os.path.join(OUTPUT_DIR, "reviews_metadata.pkl")
 
 # Embedding model
@@ -153,8 +153,9 @@ def main():
     print(f"Created FAISS index with {index.ntotal} vectors of dimension {dimension}.")
     
     # Save FAISS index and metadata
-    with open(FAISS_INDEX_PATH, "wb") as f:
-        pickle.dump(index, f)
+    # Use FAISS's native binary I/O for the index for cross-version compatibility
+    faiss.write_index(index, FAISS_INDEX_PATH)
+    # Metadata can still use pickle since it's just Python objects
     with open(METADATA_PATH, "wb") as f:
         pickle.dump(metadata_list, f)
     
