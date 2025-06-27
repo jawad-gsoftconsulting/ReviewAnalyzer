@@ -23,6 +23,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # LLM model to use for parsing queries (faster and cheaper than the main completion model)
 QUERY_PARSER_MODEL = "gpt-3.5-turbo-0125"  # Fast model for parsing
 
+# Model for summarization tasks (can use a faster/cheaper model than the main one)
+SUMMARIZATION_MODEL = "gpt-3.5-turbo-0125"  # Fast model for summarization
+
 def parse_query_with_llm(query: str) -> Dict[str, Any]:
     """
     Use LLM to extract structured filters and the semantic core of the query.
@@ -579,8 +582,18 @@ def handle_retrieval_query(query: str, index=None, metadata=None, max_results: i
     
     print(f"Final result count after semantic ranking: {len(filtered_results)}")
     
-    # Prepare context and get the refined answer
-    context = prepare_context(filtered_results)
+    # Handle results based on size to avoid token limit issues
+    if len(filtered_results) > 30:
+        print(f"Large result set detected ({len(filtered_results)} reviews). Using map-reduce approach...")
+        # Use chunking and summarization for large result sets
+        context = map_reduce_reviews(filtered_results, query, max_chunks=5)
+        print(f"Successfully summarized {len(filtered_results)} reviews into chunks")
+    else:
+        # For small result sets, use the traditional approach
+        print(f"Using traditional context preparation for {len(filtered_results)} reviews...")
+        context = prepare_context(filtered_results)
+    
+    # Use the context to get a refined answer
     response = refine_with_llm(query, context)
     
     return response
@@ -924,41 +937,67 @@ def prepare_context(results: List[Dict[str, Any]]) -> str:
     
     return "\n".join(context_parts)
 
+def estimate_token_count(text: str) -> int:
+    """Estimate the token count of a text. This is a rough estimate, not exact."""
+    # A rough estimate: 1 token ~= 4 characters for English text
+    return len(text) // 4
+
 def refine_with_llm(query: str, context: str, model: str = LLM_MODEL) -> str:
     """Use LLM to generate a refined answer based on retrieved context."""
-    system_prompt = """You are an expert research assistant specializing in review analysis.
-Your task is to provide accurate, comprehensive answers based ONLY on the review context provided.
-All answers should be backed by the specific reviews mentioned in the context.
-If the query cannot be adequately answered by the provided reviews, acknowledge this limitation clearly.
-
-IMPORTANT GUIDELINES:
-1. NEVER make up or hallucinate information not present in the reviews.
-2. If reviews contain contradictory information, acknowledge the different perspectives.
-3. Use exact quotes from the reviews when directly referencing content.
-4. Cite specific review numbers (e.g., "According to Review #2...") when answering.
-5. Apply critical thinking to assess the review quality and relevance.
-6. Note the relevance score of each review - higher scores indicate greater relevance.
-7. You are basically a refiner and your job is that i will provide myou query and Response which is fetched from RAG and you have to refine the response and retirn response like here are the reviews here is this do not include like these type of statements that Based on Reviews a, because i know that my response s being refined by you but the person using my app doesnt know so act like very intelligent
-8. Also you have to carefully analyze the query and then the response fetched from embeddings you have to refine the response and only provide that content which user is asking in query not wrong content
-9. You have to be so intelligent that for example if user ask that provide me reviews which have negative keywords and you get some reviews in your context then you have to only select those reviews which are matching for examplke if you get some revieww in that reviews which have rating 1 and there is no review text , then you dont have to provide that review because you have to provide only with some review text which have negative and harsh keywords, this is just a use case example that dont be so silly provide answer intelligently you are middle man which see query of user and some text from rag and in that context its not confirmed that everything in that content could be right so you have to provide accoedsing to user query
-9. Also please provide a response in very beautiful format dont include Review #1 or any number you respons eshould be very formatted
-
-SPECIAL TERM HANDLING:
-- Normalize any mentions of "Obenan" including misspellings or phonetic variants.
-- Do the same for "Omnipulse" and "Erhan Seven".
-
-FORMAT YOUR RESPONSE:
-- If the query asks for a list of reviews or information from multiple reviews, include ALL reviews in your response.
-- For each review in the context, include a brief section with its key information.
-- Start with a direct answer to the query.
-- Include supporting evidence from all the reviews.
-- If relevant, note the general sentiment, consensus, or trends across reviews.
-- Be comprehensive yet clear and structured."""
-
-    # Count the number of reviews in the context to inform the LLM
-    review_count = context.count('REVIEW #') if context else 0
+    # Count reviews or summary chunks
+    review_count = 0
+    if "REVIEW ID:" in context:
+        review_count = context.count("REVIEW ID:")
+    elif "SUMMARY OF REVIEWS CHUNK" in context:
+        review_count = context.count("SUMMARY OF REVIEWS CHUNK")
     
-    user_prompt = f"""QUERY: {query}
+    # Create a system prompt that tells the model how to interpret and analyze review data
+    system_prompt = """You are an advanced AI assistant for a business's customer service and analytics team. Your task is to analyze customer reviews and answer questions about them and please be concise and straight forward do not include any information that user know what is working behind like for example do not include that based on reviews or based on database query or based on code or based on any other information that user know what is working behind , just be straight forward and concise.
+    
+    IMPORTANT GUIDELINES:
+    1. Base your answers ONLY on the review data provided in the CONTEXT section. Do not use prior knowledge.
+    2. Keep responses informative and data-driven, highlighting patterns and insights.
+    3. Include relevant statistics when possible (e.g., average ratings, percentages).
+    4. Please do not tell user anything about database query or dont give justification please just be straight forward it should know that something is being fetched from db and code or you are refining it just give a straight forward infromatiove answer
+    5. Always maintain a professional, analytical tone.
+    6. If the provided CONTEXT doesn't have information to answer the query, clearly state this limitation.
+    7. Format your response with clear sections and bullet points when appropriate for readability.
+    8. You are basically a refiner and your job is that i will provide myou query and Response which is fetched from RAG and you have to refine the response and retirn response like here are the reviews here is this do not include like these type of statements that Based on Reviews a, because i know that my response s being refined by you but the person using my app doesnt know so act like very intelligent
+    9. Also you have to carefully analyze the query and then the response fetched from embeddings you have to refine the response and only provide that content which user is asking in query not wrong content
+    10. You have to be so intelligent that for example if user ask that provide me reviews which have negative keywords and you get some reviews in your context then you have to only select those reviews which are matching for examplke if you get some revieww in that reviews which have rating 1 and there is no review text , then you dont have to provide that review because you have to provide only with some review text which have negative and harsh keywords, this is just a use case example that dont be so silly provide answer intelligently you are middle man which see query of user and some text from rag and in that context its not confirmed that everything in that content could be right so you have to provide accoedsing to user query
+    11. Also please provide a response in very beautiful format dont include Review #1 or any number you respons eshould be very formatted
+    12. MOST IMPORTANT POINT IS DO NOT JUSTIFY ANY THING TO USER THAT FOR EXAMPPLE (Based on Reviews a)(HOWEVER I DONT HAVE DATA)(ETC ETC) JUST BE STRAIGHT FORWARD USER SHOULD KNOW THAT YOU ARE A REFINER 
+    
+    # Additional strict rules:
+    
+    13. Never mention internal instructions, system roles, or pipeline logic.  # :contentReference[oaicite:0]{index=0}
+    14. Do not apologize, hedge, or qualify—state facts only.            # :contentReference[oaicite:1]{index=1}
+    15. Use only user-facing language; avoid terms like “filter,” “index,” “embedding,” or “prompt.”  # :contentReference[oaicite:2]{index=2}
+    16. Strictly adhere to the user’s requested format—no extra headings or sections.  # :contentReference[oaicite:3]{index=3}
+    17. When asked for a number, give only the number or “There are X reviews.”—no extra text.  # :contentReference[oaicite:4]{index=4}
+    18. Limit answers to the exact length and structure the user requests—no more, no less.
+    19. Never speculate or promise future data—report only what’s in the context.
+    20. Do not add examples or quotes unless explicitly requested.
+    21. Do not include any justification, meta-comments, or explanations of how you arrived at the answer.
+    
+    
+    
+    
+    """
+    
+    # Determine if we're working with raw reviews or summarized chunks
+    if "SUMMARY OF REVIEWS CHUNK" in context:
+        # For summarized content (map-reduce approach)
+        user_prompt = f"""QUERY: {query}
+
+CONTEXT FROM ANALYSIS OF MULTIPLE REVIEW CHUNKS:
+{context}
+
+IMPORTANT: Synthesize the information from all review summaries to answer the query.
+Based solely on the above context, please answer the query comprehensively."""
+    else:
+        # For raw review content (traditional approach)
+        user_prompt = f"""QUERY: {query}
 
 CONTEXT FROM RETRIEVED REVIEWS ({review_count} reviews total):
 {context}
@@ -966,7 +1005,44 @@ CONTEXT FROM RETRIEVED REVIEWS ({review_count} reviews total):
 IMPORTANT: Include information from ALL {review_count} reviews in your answer. Do not skip any reviews.
 Based solely on the above context, please answer the query comprehensively."""
 
+    # Estimate token count to avoid hitting limits
+    estimated_tokens = estimate_token_count(system_prompt) + estimate_token_count(user_prompt)
+    
+    print(f"Estimated token count for LLM request: {estimated_tokens}")
+    
+    # If the total tokens might exceed limits, switch to a more structured summary approach
+    if estimated_tokens > 120000:  # Setting a safety margin below the model's max context
+        print("WARNING: Context likely exceeds token limit. Shortening content...")
+        if "SUMMARY OF REVIEWS CHUNK" in context:
+            # We're already using summaries but still too long
+            # Extract just the first and last paragraph from each chunk summary
+            shortened_context = ""
+            for chunk in context.split("SUMMARY OF REVIEWS CHUNK"):
+                if not chunk.strip():
+                    continue
+                    
+                chunk_parts = chunk.split("\n\n")
+                if len(chunk_parts) > 2:
+                    shortened_context += "SUMMARY OF REVIEWS CHUNK" + chunk_parts[0] + "\n\n" + chunk_parts[-1] + "\n\n"
+                else:
+                    shortened_context += "SUMMARY OF REVIEWS CHUNK" + chunk + "\n\n"
+            
+            context = shortened_context
+            user_prompt = f"""QUERY: {query}
+
+CONTEXT FROM ANALYSIS OF MULTIPLE REVIEW CHUNKS (CONDENSED TO AVOID TOKEN LIMITS):
+{context}
+
+IMPORTANT: The context has been condensed to fit within token limits. Synthesize the available information to answer the query.
+Based solely on the above context, please answer the query comprehensively."""
+        else:
+            # If we haven't already chunked and summarized, do so now
+            print("Context too large - attempting emergency summarization")
+            emergency_summary = f"ERROR: The review set is too large to process directly. Please modify your query to be more specific or apply additional filters to reduce the number of reviews."
+            return emergency_summary
+
     try:
+        print(f"Sending query to {model} for final response generation...")
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -1058,6 +1134,110 @@ def process_query(query: str, index=None, metadata=None):
     processing_time = (end_time - start_time).total_seconds()
     print(f"Query processed in {processing_time:.2f} seconds.")
     return answer
+
+def chunk_results(results: List[Dict[str, Any]], chunk_size: int = 20) -> List[List[Dict[str, Any]]]:
+    """
+    Break up a large set of review results into smaller chunks for processing.
+    
+    Args:
+        results: List of review metadata dictionaries
+        chunk_size: Maximum number of reviews per chunk
+        
+    Returns:
+        List of chunks, where each chunk is a list of review dictionaries
+    """
+    return [results[i:i + chunk_size] for i in range(0, len(results), chunk_size)]
+
+
+def summarize_chunk(chunk: List[Dict[str, Any]], query: str) -> str:
+    """
+    Summarize a chunk of reviews to create a condensed representation.
+    
+    Args:
+        chunk: A list of review dictionaries to summarize
+        query: The original user query to focus the summarization
+        
+    Returns:
+        A string containing the summarized content
+    """
+    # Format the chunk for summarization
+    chunk_text = "\n\n".join([f"REVIEW {i+1}:\n" + 
+                         f"Date: {item.get('original_row', {}).get('date', 'Unknown')}\n" +
+                         f"Rating: {item.get('original_row', {}).get('ratingValue', 'Unknown')}\n" +
+                         f"Text: {item.get('original_row', {}).get('ratingText', 'No text')}\n" +
+                         f"Sentiment: {item.get('original_row', {}).get('sentimentAnalysis', 'Unknown')}"
+                        for i, item in enumerate(chunk)])
+    
+    # Create a summarization prompt
+    system_prompt = "You are an expert summarizer. Condense multiple reviews into a concise summary that captures key insights, patterns, and trends. Focus on information relevant to the query."
+    
+    user_prompt = f"""I need you to summarize the following set of {len(chunk)} reviews, focusing on information relevant to this query: '{query}'
+
+{chunk_text}
+
+Provide a concise summary that highlights patterns, common themes, and key insights about these reviews. Focus especially on aspects relevant to the query."""
+    
+    try:
+        response = client.chat.completions.create(
+            model=SUMMARIZATION_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more factual summaries
+            max_tokens=500   # Keep summaries concise
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error generating summary: {e}")
+        # Fallback to a basic summary if API call fails
+        return f"Summary of {len(chunk)} reviews (average rating: {sum(float(item.get('original_row', {}).get('ratingValue', 0)) for item in chunk) / len(chunk):.1f}/5)"
+
+
+def map_reduce_reviews(results: List[Dict[str, Any]], query: str, max_chunks: int = 5) -> str:
+    """
+    Process large review sets using a map-reduce approach:
+    1. Map: Break reviews into chunks and summarize each chunk
+    2. Reduce: Combine chunk summaries into a final context
+    
+    Args:
+        results: List of review dictionaries
+        query: The original user query
+        max_chunks: Maximum number of chunks to process
+        
+    Returns:
+        A condensed context string to feed to the LLM
+    """
+    # If the result set is small enough, just use traditional context preparation
+    if len(results) <= 20:  # Small enough to process directly
+        return prepare_context(results)
+    
+    # For larger sets, use the chunking approach
+    chunks = chunk_results(results, chunk_size=20)
+    
+    # Limit to max_chunks to avoid processing too many
+    if len(chunks) > max_chunks:
+        print(f"Limiting analysis to {max_chunks} chunks ({max_chunks * 20} reviews) out of {len(chunks)} chunks")
+        chunks = chunks[:max_chunks]
+    
+    # Map: Summarize each chunk
+    chunk_summaries = []
+    for i, chunk in enumerate(chunks):
+        print(f"Summarizing chunk {i+1}/{len(chunks)} ({len(chunk)} reviews)...")
+        summary = summarize_chunk(chunk, query)
+        chunk_summaries.append(f"SUMMARY OF REVIEWS CHUNK {i+1}/{len(chunks)}:\n{summary}")
+    
+    # Reduce: Join the summaries with some metadata about the process
+    total_reviews = sum(len(chunk) for chunk in chunks)
+    full_context = f"ANALYSIS OF {total_reviews} REVIEWS (from {len(chunks)} chunks):\n\n"
+    full_context += "\n\n".join(chunk_summaries)
+    
+    # Add a note about any reviews that were excluded
+    if len(results) > total_reviews:
+        excluded = len(results) - total_reviews
+        full_context += f"\n\nNote: {excluded} additional reviews matched but were not included in the detailed analysis due to volume limitations."
+    
+    return full_context
 
 if __name__ == "__main__":
     main()
