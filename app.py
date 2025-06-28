@@ -10,7 +10,8 @@ import sys
 import logging
 
 # Import the RAG system functionality
-from retriever_responder import parse_query_with_llm, load_index_and_metadata, process_query
+from retriever_responder import parse_user_query, load_faiss_index, process_query
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -61,7 +62,7 @@ def initialize_app():
     global index, metadata
     try:
         logger.info("Loading FAISS index and metadata...")
-        index, metadata = load_index_and_metadata()
+        index, metadata = load_faiss_index()
         logger.info(f"Successfully loaded index with {index.ntotal} vectors")
         return True
     except Exception as e:
