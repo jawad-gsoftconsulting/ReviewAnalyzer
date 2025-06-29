@@ -1045,7 +1045,7 @@ METADATA_PATH = os.path.join(EMBEDDINGS_DIR, "reviews_metadata.pkl")
 
 # Models
 EMBEDDING_MODEL = "text-embedding-ada-002"
-LLM_MODEL = "gpt-4o"  # Can be changed to gpt-4o or other preferred model
+LLM_MODEL = "gpt-4o-mini"  # Can be changed to gpt-4o or other preferred model
 
 def normalize_metadata(metadata):
     """
@@ -1772,8 +1772,25 @@ def handle_time_query(query: str, index, metadata: List[Dict[str, Any]], max_res
         
     # Add examples if requested
     if parsed_query.get("include_examples", True):
-        # Get up to 5 examples (sorted by date, newest first)
-        examples_df = df.sort_values(by="_parsed_date", ascending=False).head(5)
+        # First apply the proper sentiment filter if specified
+        if sentiment:
+            logger.info(f"Filtering example reviews for time distribution by sentiment: {sentiment}")
+            filtered_df = df[df["sentiment"].str.lower() == sentiment.lower()]
+            if len(filtered_df) == 0:
+                logger.warning(f"No examples with sentiment '{sentiment}' found in the specified period")
+                response += f"\n\nNo example reviews with {sentiment} sentiment found in this time period."
+                return response
+        else:
+            filtered_df = df
+            
+        # Get up to 5 examples (sorted by date, newest first) from the properly filtered DataFrame
+        examples_df = filtered_df.sort_values(by="_parsed_date", ascending=False).head(5)
+        
+        # Debug logging to verify sentiment filtering worked
+        if sentiment:
+            logger.info(f"Selected {len(examples_df)} example reviews with sentiment '{sentiment}'")
+            for _, row in examples_df.iterrows():
+                logger.info(f"Example review sentiment: {row.get('sentiment')}, rating: {row.get('__rating')}")
         
         if len(examples_df) > 0:
             response += "\n\nHere are some example reviews:\n\n"
@@ -1996,7 +2013,7 @@ def handle_count_query(query: str, index=None, metadata=None, max_results: int =
         # Call OpenAI API directly
         logger.info("Making direct call to OpenAI API for count query response...")
         response = client.chat.completions.create(
-            model="gpt-4o",  # Use a capable model for summarization
+            model="gpt-4o-mini",  # Use a capable model for summarization
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -2320,7 +2337,7 @@ def handle_retrieval_query(query: str, index=None, metadata=None, max_results: i
         
         # Debug: Check what context is actually being sent to the LLM
         if DEBUG_REVIEWS:
-            print(f"\n=== DEBUG: CONTEXT BEING SENT TO LLM ===\n{context[:500]}...\n=== END DEBUG CONTEXT PREVIEW ===\n")
+            print(f"\n=== DEBUG: CONTEXT BEING SENT TO LLM ===\n{context}\n=== END DEBUG CONTEXT PREVIEW ===\n")
         
         # Special handling for empty context despite having filtered results
         if context.strip() == "No relevant reviews found." or context.strip() == "Reviews were found matching your date criteria, but none contained substantial review text or rating information.":
